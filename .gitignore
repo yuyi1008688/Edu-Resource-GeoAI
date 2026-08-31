@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.ipynb_checkpoints/
+
+# 虚拟环境
+.env
+.venv
+.venv_l4
+env/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# 运行时输出（脚本产物，不入库）
+output/
+output_*/
+输出数据/
+src/core/输出数据/
+src/core/输入数据/
+optuna_*.log
+*.log
+
+# 大数据文件（数据获取方式见 data/README.md）
+*.tif
+*.tiff
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.gpkg
+*.geojson
+*.gdb/
+
+# 本地专有格式留档目录（仅本地保留，不公开）
+src/tools/
+
+# 内部开发件 / 过程稿（不公开）
+tests/proto_*.py
+tests/prepare_chain_inputs.py
+tests/L0_baseline.json
+tests/*.md
+REORGANIZATION.md
+*进度*.md
+_gen_step*.py
+output_l2fresh_log.txt
+_tmp_*.py
+
+# 含真实学校名称的旧版扩容方案图（不公开，本地保留）
+results/maps/C7_*
+
+# 旧 git 历史本地备份（含匿名前提交，切勿入库）
+.git_legacy_backup/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
