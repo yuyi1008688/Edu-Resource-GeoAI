@@ -534,6 +534,58 @@ def raster_zonal_mean(zones, raster_path, output_field):
     return pd.DataFrame({output_field: values}, index=zones.index)
 
 
+def build_grid_lifecircle_features(grid_lc, fishnet, build_density_raster,
+                                   buildings, worldpop_path, vitality_field,
+                                   grid_id_field="grid_id"):
+    """路线丙：在格网15min生活圈上聚合与学校等时圈同口径的模型B特征。
+    X1=圈内活力面积加权均值；X2=圈内建筑密度；X3=圈内WorldPop均值；
+    pct_C1..6=圈内6类社区相交面积占比；dominant_cluster=主导社区类型。
+    返回以 grid_id_field 为键的 DataFrame（与格网行序无关，按键merge）。"""
+    gid = grid_id_field
+    x1 = overlay_area_weighted_mean(
+        grid_lc, fishnet, gid, vitality_field)[[gid, "X1_vitality"]]
+    if build_density_raster:
+        x2 = raster_zonal_mean(grid_lc, build_density_raster, "X2_build_den")
+        x2[gid] = grid_lc[gid].values
+    else:
+        x2 = polygon_area_density(
+            grid_lc[[gid, "geometry"]], buildings, gid, "X2_build_den")
+    x3 = raster_zonal_mean(grid_lc, worldpop_path, "X3_worldpop")
+    x3[gid] = grid_lc[gid].values
+    pc = pd.DataFrame({gid: grid_lc[gid].values})
+    if "CLUSTER_ID" in fishnet.columns:
+        joined = gpd.sjoin(
+            fishnet[["CLUSTER_ID", "geometry"]],
+            grid_lc[[gid, "geometry"]], how="inner", predicate="intersects")
+        joined["_ia"] = joined.geometry.area
+        joined = joined[joined["_ia"] > 0.01]
+        rows = []
+        for _k, grp in joined.groupby(gid):
+            tot = grp["_ia"].sum()
+            row = {gid: _k}
+            for c in range(1, 7):
+                row["pct_C%d" % c] = grp.loc[
+                    grp["CLUSTER_ID"] == c, "_ia"].sum() / (tot + 1e-9)
+            row["dominant_cluster"] = int(np.argmax(
+                [row["pct_C%d" % c] for c in range(1, 7)]) + 1)
+            rows.append(row)
+        pc = pd.DataFrame(rows)
+    _geom = grid_lc.geometry
+    _area = _geom.area
+    _lc = pd.DataFrame({
+        gid: grid_lc[gid].values,
+        "service_area_km2": _area.values / 1e6,
+        "compactness": (4.0 * np.pi * _area.values
+                          / (_geom.length.values ** 2 + 1e-9)),
+    })
+    out = (grid_lc[[gid]].merge(x1, on=gid, how="left")
+           .merge(x2, on=gid, how="left")
+           .merge(x3, on=gid, how="left")
+           .merge(pc, on=gid, how="left")
+           .merge(_lc, on=gid, how="left"))
+    return out
+
+
 def build_spatial_weight_matrix(coords, k, kernel="gaussian"):
     dist = cdist(coords, coords)
     np.fill_diagonal(dist, np.inf)
@@ -1857,6 +1909,7 @@ def run_analysis(
     build_density_raster=None,
     buildings_path=None,
     worldpop_path=None,
+    grid_lifecircle_path=None,
     outdir_path=None,
     target_crs="EPSG:4526",
     school_crs="EPSG:4526",
@@ -2157,11 +2210,11 @@ def run_analysis(
                   index=False, encoding="utf-8-sig")
 
     # ══════════════════════════════════════════════════════════════
-    # 模型B：格网直推制图模型
+    # 模型B：15min生活圈特征空间降尺度制图模型
     # ══════════════════════════════════════════════════════════════
     log("\n" + "=" * 60)
-    log("[制图模型] 模型B：格网直推制图模型")
-    log("  特征：格网栅格直读（活力/建筑密度/WorldPop）+坐标+RBF")
+    log("[制图模型] 模型B：15min生活圈特征降尺度制图模型")
+    log("  特征：15min生活圈聚合(活力/建筑/人口+社区占比+圈面积/紧凑度)+坐标+RBF")
     log("  一致性检验：直接对学校坐标推断（消除nan）")
     log("=" * 60)
 
@@ -2173,9 +2226,16 @@ def run_analysis(
     for i, nm in enumerate(rbf_names_B):
         model_df[f"B_{nm}"] = rbf_feats_B[:, i]
 
+    _B_extra = [c for c in (
+        ["pct_C%d" % c for c in range(1, 7)] + ["dominant_cluster",
+        "service_area_km2", "compactness"])
+        if c in model_df.columns]
+    if _B_extra:
+        log(f"  制图模型纳入生活圈社区结构特征({len(_B_extra)}个): {_B_extra}")
     feature_cols_B = (
-            ["X1_vitality", "X2_build_den", "X3_worldpop",
-             "x_coord", "y_coord"] +
+            ["X1_vitality", "X2_build_den", "X3_worldpop"] +
+            _B_extra +
+            ["x_coord", "y_coord"] +
             [f"B_{nm}" for nm in rbf_names_B]
     )
     for c in feature_cols_B:
@@ -2225,31 +2285,64 @@ def run_analysis(
         f" | MdAPE: {cv_B['mdape_raw']['mean']:.1f}%")
 
     # ── 10. 格网特征提取 ──
-    log("\n[步骤10] 格网特征提取（制图模型直读栅格）...")
+    log("\n[步骤10] 格网生活圈特征提取（与学校等时圈同口径）...")
     fishnet = fishnet.copy().reset_index(drop=True)
     fishnet["grid_id"] = np.arange(1, len(fishnet) + 1, dtype=int)
-    fishnet["X1_vitality"] = pd.to_numeric(
-        fishnet[vitality_field], errors="coerce").fillna(
-        float(medians["X1_vitality"]))
-
-    if build_density_raster:
-        fishnet["X2_build_den"] = raster_zonal_mean(
-            fishnet, build_density_raster, "X2_build_den").values
-    elif grid_build_field:
+    if grid_lifecircle_path:
+        log("[步骤10·路线丙] 格网15min生活圈同口径特征聚合（消除尺度失配）...")
+        grid_lc = read_vector(grid_lifecircle_path, target_crs, "格网生活圈")
+        lc_feat = build_grid_lifecircle_features(
+            grid_lc, fishnet, build_density_raster, buildings,
+            worldpop_path, vitality_field)
+        fishnet = fishnet.merge(lc_feat, on="grid_id", how="left")
+        # X1 兜底：极少数边界裁剪生活圈缺失 → 回退格网自身活力
+        _self_vit = pd.to_numeric(fishnet[vitality_field], errors="coerce")
+        fishnet["X1_vitality"] = pd.to_numeric(
+            fishnet["X1_vitality"], errors="coerce").fillna(_self_vit).fillna(
+            float(medians["X1_vitality"]))
         fishnet["X2_build_den"] = pd.to_numeric(
-            fishnet[grid_build_field], errors="coerce")
+            fishnet["X2_build_den"], errors="coerce").fillna(
+            float(medians["X2_build_den"]))
+        fishnet["X3_worldpop"] = pd.to_numeric(
+            fishnet["X3_worldpop"], errors="coerce").fillna(
+            float(medians["X3_worldpop"]))
+        for c in range(1, 7):
+            fishnet["pct_C%d" % c] = pd.to_numeric(
+                fishnet["pct_C%d" % c], errors="coerce").fillna(0.0)
+        fishnet["dominant_cluster"] = pd.to_numeric(
+            fishnet["dominant_cluster"], errors="coerce")
+        if "CLUSTER_ID" in fishnet.columns:
+            fishnet["dominant_cluster"] = fishnet["dominant_cluster"].fillna(
+                pd.to_numeric(fishnet["CLUSTER_ID"], errors="coerce"))
+        fishnet["dominant_cluster"] = fishnet["dominant_cluster"].fillna(0)
+        for _lc_col in ["service_area_km2", "compactness"]:
+            if _lc_col in fishnet.columns:
+                fishnet[_lc_col] = pd.to_numeric(
+                    fishnet[_lc_col], errors="coerce")
+                fishnet[_lc_col] = fishnet[_lc_col].fillna(
+                    float(fishnet[_lc_col].median()))
+        log(f"  生活圈特征聚合完成，格网端模型B特征列就绪：{len(fishnet)}格")
     else:
-        gd = polygon_area_density(
-            fishnet[["grid_id", "geometry"]], buildings,
-            "grid_id", "X2_build_den")
-        fishnet = fishnet.merge(gd, on="grid_id", how="left")
-    fishnet["X2_build_den"] = fishnet["X2_build_den"].fillna(
-        float(medians["X2_build_den"]))
-
-    fishnet["X3_worldpop"] = raster_zonal_mean(
-        fishnet, worldpop_path, "X3_worldpop").values
-    fishnet["X3_worldpop"] = fishnet["X3_worldpop"].fillna(
-        float(medians["X3_worldpop"]))
+        fishnet["X1_vitality"] = pd.to_numeric(
+            fishnet[vitality_field], errors="coerce").fillna(
+            float(medians["X1_vitality"]))
+        if build_density_raster:
+            fishnet["X2_build_den"] = raster_zonal_mean(
+                fishnet, build_density_raster, "X2_build_den").values
+        elif grid_build_field:
+            fishnet["X2_build_den"] = pd.to_numeric(
+                fishnet[grid_build_field], errors="coerce")
+        else:
+            gd = polygon_area_density(
+                fishnet[["grid_id", "geometry"]], buildings,
+                "grid_id", "X2_build_den")
+            fishnet = fishnet.merge(gd, on="grid_id", how="left")
+        fishnet["X2_build_den"] = fishnet["X2_build_den"].fillna(
+            float(medians["X2_build_den"]))
+        fishnet["X3_worldpop"] = raster_zonal_mean(
+            fishnet, worldpop_path, "X3_worldpop").values
+        fishnet["X3_worldpop"] = fishnet["X3_worldpop"].fillna(
+            float(medians["X3_worldpop"]))
 
     fishnet["x_coord"] = fishnet.geometry.centroid.x
     fishnet["y_coord"] = fishnet.geometry.centroid.y
@@ -2275,7 +2368,7 @@ def run_analysis(
     grid_Xs_B = scaler_B.transform(grid_B_df[feature_cols_B].values)
 
     # ── 11. 格网预测（模型B）──
-    log("\n[步骤11] 格网压力预测（制图模型直推）...")
+    log("\n[步骤11] 格网压力预测（生活圈降尺度制图）...")
     train_pred_B = model_B.predict(Xs_B)
     smearing_B = float(np.mean(np.exp(y_B - train_pred_B)))
     log(f"  smearing系数 = {smearing_B:.4f}")

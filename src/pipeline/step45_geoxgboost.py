@@ -47,6 +47,9 @@ def main():
     # 第2组：可选输入（建筑二选一）
     ap.add_argument("--build-density-raster", default=None)
     ap.add_argument("--buildings", default=None)
+    # 路线丙：格网15min生活圈（模型B同口径特征，消除训练/预测尺度失配）
+    ap.add_argument("--grid-lifecircle", default=None,
+                    help="step43c 格网生活圈面；提供后模型B按生活圈同口径聚合特征")
     # 第3组：字段与坐标系
     ap.add_argument("--target-crs", default="EPSG:4526")
     ap.add_argument("--school-crs", default="EPSG:4526")
@@ -81,7 +84,8 @@ def main():
         school_csv=args.school_csv, fishnet_path=args.fishnet,
         iso_primary_path=args.iso_primary, iso_middle_path=args.iso_middle,
         build_density_raster=args.build_density_raster, buildings_path=args.buildings,
-        worldpop_path=args.worldpop, outdir_path=args.outdir,
+        worldpop_path=args.worldpop, grid_lifecircle_path=args.grid_lifecircle,
+        outdir_path=args.outdir,
         target_crs=args.target_crs, school_crs=args.school_crs,
         school_id_field=args.school_id_field, service_id_field=args.service_id_field,
         d3_field=args.d3_field, vitality_field=args.vitality_field,

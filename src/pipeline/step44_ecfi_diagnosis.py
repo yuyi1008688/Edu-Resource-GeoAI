@@ -1066,27 +1066,17 @@ def tool_44_execute(params, messages=None):
             school_df[COL_SCHOOL_ID]
             .astype(str).str.strip())
 
-        x_ok = (school_df[COL_X_COORD].notna().all()
-                and (school_df[COL_X_COORD] != 0).all())
-        y_ok = (school_df[COL_Y_COORD].notna().all()
-                and (school_df[COL_Y_COORD] != 0).all())
-
-        if x_ok and y_ok:
-            msg("  使用 x_coord/y_coord (EPSG:4526)")
-            school_df['geometry'] = school_df.apply(
-                lambda r: Point(r[COL_X_COORD],
-                                r[COL_Y_COORD]), axis=1)
-            school_gdf = gpd.GeoDataFrame(
-                school_df, geometry='geometry',
-                crs=TARGET_CRS)
-        else:
-            msg("  回退到经纬度并重投影")
-            school_df['geometry'] = school_df.apply(
-                lambda r: Point(r[COL_LNG], r[COL_LAT]),
-                axis=1)
-            school_gdf = gpd.GeoDataFrame(
-                school_df, geometry='geometry',
-                crs="EPSG:4326").to_crs(TARGET_CRS)
+        # [期刊版修复] 历史 x_coord/y_coord 误填为经纬度副本，若直接当 EPSG:4526
+        # 投影坐标会令距离特征出现 ~3.87e7 m 的天文值。统一以经纬度为唯一权威坐标源，
+        # 先按 EPSG:4326 构造几何再重投影到 TARGET_CRS，并把正确投影米坐标回填 x/y_coord。
+        school_df['geometry'] = school_df.apply(
+            lambda r: Point(r[COL_LNG], r[COL_LAT]), axis=1)
+        school_gdf = gpd.GeoDataFrame(
+            school_df, geometry='geometry',
+            crs="EPSG:4326").to_crs(TARGET_CRS)
+        school_gdf[COL_X_COORD] = school_gdf.geometry.x
+        school_gdf[COL_Y_COORD] = school_gdf.geometry.y
+        msg("  统一由经纬度(EPSG:4326)重投影至 %s，并回填 x/y_coord" % TARGET_CRS)
 
         if COL_FID not in school_gdf.columns:
             school_gdf[COL_FID] = range(len(school_gdf))

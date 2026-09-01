@@ -46,6 +46,7 @@ STEPS = {
     "road43":         ("src/pipeline/step43_road_preprocess.py", "4.3a 路网预处理（LTS+OSRM 权重）", True),
     "sa_primary":     ("src/pipeline/step43b_service_area.py", "4.3b 小学步行 15min 等时圈（networkx）", True),
     "sa_middle":      ("src/pipeline/step43b_service_area.py", "4.3c 中学骑行 15min 等时圈（networkx）", True),
+    "grid_lc":        ("src/pipeline/step43c_grid_lifecircle.py", "4.3d 格网15min生活圈（模型B同口径，多进程）", True),
     "ecfi44":         ("src/pipeline/step44_ecfi_diagnosis.py", "4.4 ECFI 三维诊断", True),
     "geoxgboost45":   ("src/pipeline/step45_geoxgboost.py", "4.5 GeoXGBoost 双模型", True),
     "sms46":          ("src/pipeline/step46_pipeline.py", "4.6 软实力标签与 SMS 主引擎", True),
@@ -54,7 +55,7 @@ STEPS = {
 }
 
 DEFAULT_ORDER = ["gdb_convert", "normalize", "cut", "extract", "vitality",
-                 "cluster42", "road43", "sa_primary", "sa_middle",
+                 "cluster42", "road43", "sa_primary", "sa_middle", "grid_lc",
                  "ecfi44", "geoxgboost45", "sms46", "opt47", "eval50"]
 
 
@@ -96,6 +97,12 @@ def step_cmds(name, data_dir, out_dir):
                         "--facilities", str(dd / "Middle_school.shp"),
                         "--boundary", str(dd / "zhanggong.shp"),
                         "--out", str(out / "service" / "iso_middle.shp")]]
+    if name == "grid_lc":
+        return [base + ["--roads", str(out / "step43" / "Zhanggongluwang_Prepare.shp"),
+                        "--grid", str(out / "cluster" / "Fishnet_Cluster.shp"),
+                        "--boundary", str(dd / "zhanggong.shp"),
+                        "--mode", "walk",
+                        "--out", str(out / "service" / "grid_lifecircle.gpkg")]]
     if name == "ecfi44":
         return [base + [
             "--school-csv", str(dd / "school_data.csv"),
@@ -115,6 +122,11 @@ def step_cmds(name, data_dir, out_dir):
             "--worldpop", str(dd / "WorldPop_250m_EPSG4526.tif"),
             "--build-density-raster", str(dd / "zhangong_buildings_density.tif"),
             "--buildings", str(dd / "building_footprint.shp"),
+            # 期刊版修正：4.4输出WKT为经纬度，须按4326读；模型B用格网生活圈同口径特征
+            "--school-crs", "EPSG:4326",
+            "--grid-lifecircle", str(out / "service" / "grid_lifecircle.gpkg"),
+            # 期刊版：充分超参搜索（默认75/40未收敛；100/120后两模型均提升）
+            "--optuna-trials", "100", "--optuna-refine", "120",
             "--outdir", str(out / "step45")]]
     if name == "sms46":
         return [base + ["pipeline"]]

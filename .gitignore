@@ -54,6 +54,10 @@ _gen_step*.py
 output_l2fresh_log.txt
 _tmp_*.py
 
+# 源码回退备份（仅本地保留，不入库）
+*.bak
+*.bak_*
+
 # 含真实学校名称的旧版扩容方案图（不公开，本地保留）
 results/maps/C7_*
 
